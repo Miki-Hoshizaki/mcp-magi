@@ -1,0 +1,6 @@
+mcp[cli]==0.9.1
+httpx==0.25.2
+pydantic==2.5.2
+uvicorn[standard]==0.24.0
+python-dotenv==1.0.0
+websockets==15.0
