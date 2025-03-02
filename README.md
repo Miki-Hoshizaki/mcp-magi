@@ -42,6 +42,8 @@ By default, the server connects to the MAGI Gateway at `ws://127.0.0.1:8000/ws`.
 MAGI_URL=ws://your-magi-gateway.com/ws python -m src.server
 ```
 
+**Note: You can use the MAGI System official gateway:  `ws://magisystem.ai/ws`**
+
 ### Testing with the Client
 
 The `client.py` script is provided as a testing tool to verify the MCP Server functionality. It is not intended for production use.
