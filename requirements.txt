@@ -1,4 +1,4 @@
-mcp[cli]==0.9.1
+mcp==0.9.1
 httpx==0.25.2
 pydantic==2.5.2
 uvicorn[standard]==0.24.0
