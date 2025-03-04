@@ -1,5 +1,5 @@
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession
+from mcp.client.sse import sse_client
 import asyncio
 import os
 import sys
@@ -17,34 +17,47 @@ logging.basicConfig(
 logger = logging.getLogger('magi-client')
 
 class MAGIClient:
-    def __init__(self, server_script: str = "src/server.py", 
-                magi_url: str = "ws://127.0.0.1:8000/ws",
+    def __init__(self,
+                sse_url: str = "http://127.0.0.1:8000/sse",
                 debug: bool = False):
-        # Check server script
-        if not os.path.exists(server_script):
-            raise FileNotFoundError(f"Server script not found: {server_script}")
-        
-        # Get absolute path
-        server_script = os.path.abspath(server_script)
-        logger.info(f"Using server script: {server_script}")
-        logger.info(f"MAGI URL: {magi_url}")
+        logger.info(f"MAGI URL: {sse_url}")
         
         # Set environment variables
         env = os.environ.copy()  # Copy current environment variables
         env.update({
-            "MAGI_URL": magi_url,
             "PYTHONUNBUFFERED": "1"  # Ensure output is not buffered
         })
         
         if debug:
             env["DEBUG"] = "1"
             
-        self.server_params = StdioServerParameters(
-            command=sys.executable,  # Use current Python interpreter
-            args=[server_script],
-            env=env
-        )
+        self.sse_url = sse_url
         self.debug = debug
+        self._session_context = None
+        self._streams_context = None
+        self.session = None
+
+    async def _connect_to_sse_server(self):
+        """Connect to MCP SSE server"""
+        logger.info(f"Connecting to SSE server at {self.sse_url}...")
+        
+        # Store the context managers so they stay alive
+        self._streams_context = sse_client(url=self.sse_url)
+        streams = await self._streams_context.__aenter__()
+
+        self._session_context = ClientSession(*streams)
+        self.session = await self._session_context.__aenter__()
+
+        # Initialize
+        await self.session.initialize()
+        logger.info("Session initialized successfully")
+
+    async def _cleanup(self):
+        """Properly clean up the session and streams"""
+        if self._session_context:
+            await self._session_context.__aexit__(None, None, None)
+        if self._streams_context:
+            await self._streams_context.__aexit__(None, None, None)
 
     async def review_code(self, code: str, user_input: str, timeout: float = 300) -> Dict[str, Any]:
         """
@@ -65,51 +78,50 @@ class MAGIClient:
             logger.info("-" * 40)
         
         try:
-            logger.info("Starting stdio client...")
-            async with stdio_client(self.server_params) as (read, write):
-                logger.info("Initializing client session...")
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    logger.info("Session initialized successfully")
+            logger.info("Connecting to SSE server...")
+            await self._connect_to_sse_server()
+            
+            try:
+                logger.info("Calling code_review tool...")
+                try:
+                    result = await asyncio.wait_for(
+                        self.session.call_tool(
+                            "code_review",
+                            {
+                                "user_input": user_input,
+                                "code": code
+                            }
+                        ),
+                        timeout=timeout
+                    )
+                    logger.info("Code review completed successfully")
+                    # Debug log the raw result
+                    logger.debug(f"Raw result: {result}")
                     
-                    logger.info("Calling code_review tool...")
-                    try:
-                        result = await asyncio.wait_for(
-                            session.call_tool(
-                                "code_review",
-                                {
-                                    "user_input": user_input,
-                                    "code": code
-                                }
-                            ),
-                            timeout=timeout
-                        )
-                        logger.info("Code review completed successfully")
-                        # Debug log the raw result
-                        logger.debug(f"Raw result: {result}")
-                        
-                        # Convert CallToolResult to dictionary if necessary
-                        if hasattr(result, "model_dump"):
-                            # For newer Pydantic v2.x
-                            logger.debug("Converting result using model_dump()")
-                            return result.model_dump()
-                        elif hasattr(result, "dict"):
-                            # For older Pydantic v1.x
-                            logger.debug("Converting result using dict()")
-                            return result.dict()
-                        elif hasattr(result, "__dict__"):
-                            # Fallback for regular Python objects
-                            logger.debug("Converting result using __dict__")
-                            return result.__dict__
-                        else:
-                            # Last resort - assume it's already dictionary-like
-                            logger.debug("Converting result using dict()")
-                            result_dict = dict(result)
-                            logger.debug(f"Converted result: {result_dict}")
-                            return result_dict
-                    except asyncio.TimeoutError:
-                        logger.error(f"Review timed out after {timeout} seconds")
-                        raise TimeoutError(f"Code review timed out after {timeout} seconds")
+                    # Convert CallToolResult to dictionary if necessary
+                    if hasattr(result, "model_dump"):
+                        # For newer Pydantic v2.x
+                        logger.debug("Converting result using model_dump()")
+                        return result.model_dump()
+                    elif hasattr(result, "dict"):
+                        # For older Pydantic v1.x
+                        logger.debug("Converting result using dict()")
+                        return result.dict()
+                    elif hasattr(result, "__dict__"):
+                        # Fallback for regular Python objects
+                        logger.debug("Converting result using __dict__")
+                        return result.__dict__
+                    else:
+                        # Last resort - assume it's already dictionary-like
+                        logger.debug("Converting result using dict()")
+                        result_dict = dict(result)
+                        logger.debug(f"Converted result: {result_dict}")
+                        return result_dict
+                except asyncio.TimeoutError:
+                    logger.error(f"Review timed out after {timeout} seconds")
+                    raise TimeoutError(f"Code review timed out after {timeout} seconds")
+            finally:
+                await self._cleanup()
         except asyncio.TimeoutError:
             raise
         except Exception as e:
@@ -160,10 +172,8 @@ async def main():
     """Main entry point with command line argument handling"""
     parser = argparse.ArgumentParser(description='MAGI Code Review Client')
     parser.add_argument('--file', '-f', help='Python file to review')
-    parser.add_argument('--magi-url', default="ws://127.0.0.1:8000/ws",
-                       help='MAGI server WebSocket URL')
-    parser.add_argument('--server-script', default="src/server.py",
-                       help='MAGI server script path')
+    parser.add_argument('--sse-url', default="http://127.0.0.1:8000/sse",
+                       help='MAGI MCP Server SSE URL')
     parser.add_argument('--timeout', type=float, default=300,
                        help='Review timeout in seconds')
     parser.add_argument('--output', '-o', help='Save results to JSON file')
@@ -209,8 +219,7 @@ if __name__ == "__main__":
     try:
         logger.info("Creating MAGIClient...")
         client = MAGIClient(
-            server_script=args.server_script,
-            magi_url=args.magi_url,
+            sse_url=args.sse_url,
             debug=args.debug
         )
     except FileNotFoundError as e:

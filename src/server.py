@@ -14,6 +14,12 @@ import asyncio
 from datetime import datetime
 import uuid
 import time
+import uvicorn
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.routing import Mount, Route
+from mcp.server import Server
+from mcp.server.sse import SseServerTransport
 
 # Configure logging
 if os.getenv("DEBUG", "0") == "1":
@@ -160,14 +166,49 @@ class MAGIServer:
             logger.debug(f"Returning result: {result}")
             return result
 
-    def run(self):
-        """Run the MCP server"""
-        self.mcp.run()
+
+    def create_starlette_app(self, debug: bool = False) -> Starlette:
+        """Create a Starlette application that can serve the MCP server with SSE."""
+        sse = SseServerTransport("/messages/")
+        mcp_server = self.mcp._mcp_server
+
+        async def handle_sse(request: Request) -> None:
+            async with sse.connect_sse(
+                    request.scope,
+                    request.receive,
+                    request._send,  # noqa: SLF001
+            ) as (read_stream, write_stream):
+                await mcp_server.run(
+                    read_stream,
+                    write_stream,
+                    mcp_server.create_initialization_options(),
+                )
+
+        return Starlette(
+            debug=debug,
+            routes=[
+                Route("/sse", endpoint=handle_sse),
+                Mount("/messages/", app=sse.handle_post_message),
+            ],
+        )
+
+    def run(self, host: str = "0.0.0.0", port: int = 8080, debug: bool = False):
+        """Run the MCP server as an HTTP SSE server"""
+        starlette_app = self.create_starlette_app(debug=debug)
+        logger.info(f"Starting MAGI MCP SSE server on {host}:{port}")
+        uvicorn.run(starlette_app, host=host, port=port)
 
 
 if __name__ == "__main__":
-    app = MAGIServer(
-    magi_url=os.getenv("MAGI_URL", "ws://127.0.0.1:8000/ws")
-)
+    import argparse
     
-    app.run()
+    parser = argparse.ArgumentParser(description='Run MAGI MCP SSE-based server')
+    parser.add_argument('--host', default='0.0.0.0', help='Host to bind to')
+    parser.add_argument('--port', type=int, default=8080, help='Port to listen on')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--magi-url', default=os.getenv("MAGI_URL", "ws://127.0.0.1:8000/ws"), 
+                        help='MAGI Gateway URL')
+    args = parser.parse_args()
+
+    app = MAGIServer(magi_url=args.magi_url)
+    app.run(host=args.host, port=args.port, debug=args.debug)
