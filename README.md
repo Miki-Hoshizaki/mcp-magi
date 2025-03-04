@@ -15,6 +15,7 @@ MCP Server implementation for MAGI code review system. This server provides a st
 
 - Python 3.11+
 - Access to MAGI Gateway (default: ws://127.0.0.1:8000/ws)
+- Docker (optional, for containerized deployment)
 
 ### Installation
 
@@ -43,6 +44,30 @@ MAGI_URL=ws://your-magi-gateway.com/ws python -m src.server
 ```
 
 **Note: You can use the MAGI System official gateway:  `ws://magisystem.ai/ws`**
+
+### Docker Deployment
+
+You can also deploy the MAGI MCP SSE Server using Docker:
+
+1. Build the Docker image:
+   ```bash
+   docker build -t magi-mcp-server .
+   ```
+
+2. Run the container:
+   ```bash
+   docker run -p 8080:8080 magi-mcp-server
+   ```
+
+3. To connect to a specific MAGI Gateway:
+   ```bash
+   docker run -p 8080:8080 -e MAGI_URL=ws://your-magi-gateway.com/ws magi-mcp-server
+   ```
+
+4. To run in debug mode:
+   ```bash
+   docker run -p 8080:8080 -e DEBUG=1 magi-mcp-server
+   ```
 
 ### Testing with the Client
 
